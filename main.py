@@ -20,9 +20,9 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field # Pydantic automatically validates incoming data. If the data is invalid, FastAPI returns an error and the endpoint function is never executed.
 
 
-class SummariseRequest(BaseModel):
+class SummarizeRequest(BaseModel):
     """
-    Request model for the /summarise endpoint.
+    Request model for the /summarize endpoint.
 
     Attributes:
         github_url:
@@ -36,9 +36,9 @@ class SummariseRequest(BaseModel):
     
     github_url: str = Field(..., description="Public Github repository URL") # github_url must be a string - Pydantic reads from the type hint above and knows to enforce from that.
 
-class SummariseResponse(BaseModel):
+class SummarizeResponse(BaseModel):
     """
-    Successful response returned by the /summarise endpoint.
+    Successful response returned by the /summarize endpoint.
 
     Attributes:
         summary:
@@ -55,8 +55,8 @@ class SummariseResponse(BaseModel):
 
 # Create the FastAPI app instance - the main entry point for the API server. The parameters passed to FastAPI() are used for automatic API documentation generation (Swagger UI).
 app = FastAPI(
-    title="GitHub Repository Summariser API",
-    description="API to summarise the contents of a GitHub repository.",
+    title="GitHub Repository Summarizer API",
+    description="API to summarize the contents of a GitHub repository.",
     version="0.1.0",
     openapi_tags=[ # I added this after reading up on FastAPI's documentation about API tags. This allows us to group related endpoints together in the API docs.
         {
@@ -77,15 +77,15 @@ def root() -> dict[str, str]:
 
     Example response:
         {
-            "message": "Repository Summariser API is running"
+            "message": "Repository Summarizer API is running"
         }
     """
 
     return {"message": "Hello, Nebius assignment project! The API is running."}
 
-# @app.post("/summarise", response_model=SummariseResponse, tags=["Repository Analysis"])
-@app.post("/summarise", response_model=SummariseResponse)
-def summarise_repository(request: SummariseRequest) -> SummariseResponse:
+# @app.post("/summarize", response_model=SummarizeResponse, tags=["Repository Analysis"])
+@app.post("/summarize", response_model=SummarizeResponse)
+def summarize_repository(request: SummarizeRequest) -> SummarizeResponse:
     """
     Placeholder implementatio of the repository summarisation endpoint.
 
@@ -102,7 +102,7 @@ def summarise_repository(request: SummariseRequest) -> SummariseResponse:
 
     Args:
         request: 
-            The incoming request body containing the GitHub URL to summarise.
+            The incoming request body containing the GitHub URL to summarize.
     
     Returns:
         A placeholder response with a dummy summary, list of technologies, and project structure.
@@ -113,7 +113,7 @@ def summarise_repository(request: SummariseRequest) -> SummariseResponse:
         }
     """
 
-    return SummariseResponse(
+    return SummarizeResponse(
         summary=(
             f"Place holder summary for repository at {request.github_url}. "
             "Real repository analysis will be added in the next steps."

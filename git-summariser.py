@@ -13,7 +13,7 @@ def main():
     """
     Print a simple startup message.
     """
-    print("Hello, Nebius assignment project!")
+    print("Hello, Nebius assignment project!! This is my starter file.")
 
 
 if __name__ == "__main__":

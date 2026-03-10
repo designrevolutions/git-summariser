@@ -2,24 +2,31 @@
 """
 Main FastAPI application for the Nebius assignment project.
 
-This version of the service can now download a public GitHub repository,
-extract it locally, and perform a basic structural analysis of the project.
+This version of the service performs basic analysis of a public GitHub
+repository and prepares structured context for later LLM summarisation.
 
 The /summarize endpoint currently performs the following steps:
 
 1. Validate the provided GitHub repository URL.
-2. Extract the repository owner and name from the URL.
+2. Extract the repository owner and name.
 3. Verify that the repository exists on GitHub.
 4. Download the repository as a ZIP archive.
 5. Extract the repository into a temporary working directory.
-6. Traverse the repository while ignoring large dependency directories.
-7. Collect basic structural information such as:
-   - total file count
-   - file extensions used
-   - directory names present in the project
+6. Traverse the repository structure while ignoring large dependency
+   directories (e.g. node_modules, .venv, __pycache__).
+7. Collect structural metadata including:
+   - file count
+   - file extensions present
+   - directory names
+   - important project files
+8. Infer likely technologies based on file extensions and key project files.
+9. Identify candidate files whose contents may later be passed to the LLM
+   (e.g. README.md, dependency files, configuration files).
+10. Apply a simple heuristic to adjust analysis behaviour for very large
+    repositories.
 
-This structural metadata will later be used as input to an LLM to generate
-a human-readable repository summary.
+The collected metadata will later be used to generate a human-readable
+summary of the repository using an LLM.
 
 Run:
     uvicorn main:app --reload
@@ -41,7 +48,7 @@ from pydantic import BaseModel, Field # Pydantic automatically validates incomin
 import os
 
 
-IGNORED_DIRECTORIES = {
+IGNORED_DIRECTORIES = { # These are common directories that contain large amounts of files that are not part of the actual project code, but rather dependencies or build artifacts. We want to ignore these directories when analyzing the repository structure to avoid skewing our analysis with irrelevant files.
     "node_modules",
     ".venv",
     "venv",
@@ -55,6 +62,77 @@ IGNORED_DIRECTORIES = {
     ".nuxt",
     ".git",
 }
+
+IMPORTANT_FILENAMES = { # These are common filenames that can provide important information about the project, such as its dependencies, build configuration, or documentation. We will use the presence of these files as signals when analyzing the repository structure to help identify the technologies and frameworks used in the project.
+    "readme.md",
+    "requirements.txt",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "pipfile",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "cargo.toml",
+    "cargo.lock",
+    "go.mod",
+    "go.sum",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "makefile",
+    "cmakelists.txt",
+    "composer.json",
+    "composer.lock",
+    "gemfile",
+    "gemfile.lock",
+}
+
+EXTENSION_TO_TECHNOLOGY = { # This is a mapping of common file extensions to the programming languages or technologies they are associated with. We will use this mapping to help identify the main technologies used in the project based on the file extensions present in the repository. This is a simple heuristic and may not be 100% accurate, but it can provide useful signals for our analysis.
+    ".py": "Python",
+    ".js": "JavaScript",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript",
+    ".jsx": "JavaScript",
+    ".java": "Java",
+    ".kt": "Kotlin",
+    ".rs": "Rust",
+    ".go": "Go",
+    ".php": "PHP",
+    ".rb": "Ruby",
+    ".cpp": "C++",
+    ".cc": "C++",
+    ".cxx": "C++",
+    ".c": "C",
+    ".cs": "C#",
+    ".swift": "Swift",
+    ".scala": "Scala",
+    ".sh": "Shell",
+    ".sql": "SQL",
+    ".html": "HTML",
+    ".css": "CSS",
+}
+
+FILE_TECHNOLOGY_MAP: dict[str, set[str]] = {
+    "Python": {"requirements.txt", "pyproject.toml", "setup.py", "Pipfile"},
+    "Node.js": {"package.json"},
+    "Docker": {"dockerfile", "docker-compose.yml"},
+    "Rust": {"cargo.toml"},
+    "Go": {"go.mod"},
+    "Java": {"pom.xml", "build.gradle"},
+    "PHP": {"composer.json"},
+    "Ruby": {"gemfile"},
+    "CMake": {"cmakelists.txt"},
+    "Make": {"makefile"},
+}
+
+
+MAX_FILES_FOR_BROAD_ANALYSIS = 2000 # This is a threshold for the maximum number of files we will analyze in detail when traversing the repository. If a repository contains more than this number of files, we will switch to a more high-level analysis approach that focuses on key files and directories rather than analyzing every single file. This is to ensure that our analysis remains efficient and does not get bogged down by very large repositories with thousands of files, which could lead to long processing times and increased resource usage.
 
 
 class SummarizeRequest(BaseModel): # We use this for making requests to the /summarize endpoint. It defines the expected structure of the request body and allows FastAPI to automatically validate incoming requests against this model. If a request does not conform to this model, FastAPI will return a 422 Unprocessable Entity error with details about what was wrong with the request.
@@ -353,12 +431,85 @@ def download_and_extract_repository(owner: str, repository_name: str) -> tuple[P
         raise # This is the standard way to re-raise the original exception after performing cleanup. The 'raise' statement without any arguments will re-raise the last exception that was active in the current scope, allowing us to preserve the original error message and stack trace while ensuring that we clean up any temporary resources we created before the error occurred.
 
 
-def analyse_repository_structure(repository_path: Path) -> dict[str, str]:
+def infer_technologies_from_files(
+        extensions: set[str], 
+        important_files: set[str]
+) -> list[str]:
     """
-    Traverse the extracted repository and collect basic structural information.
+    Infer likely technologies used in the repository based on file extensions
+    and important configuration/dependency files.
+
+    Args:
+        extensions:
+            Set of file extensions found in the repository.
+        important_files:
+            Set of important filenames found in the repository.
+
+    Returns:
+        Sorted list of inferred technologies.
+    """
+
+    detected_technologies = set()
+
+    for extension in extensions: # In the part, we see if we can find a match of our extensions to the technologies in our EXTENSION_TO_TECHNOLOGY mapping. This is a simple heuristic that can give us some signals about the main programming languages used in the project based on the file extensions present in the repository. For example, if we see a lot of .py files, it's a strong signal that the project uses Python. If we see .js and .jsx files, it's a strong signal that the project uses JavaScript and possibly React. This is not a perfect method, as some projects may use unconventional file extensions or have mixed technologies, but it can provide useful insights for our analysis.
+        technology = EXTENSION_TO_TECHNOLOGY.get(extension)
+        if technology:
+            detected_technologies.add(technology)
+
+    lower_important_files = {file_name.lower() for file_name in important_files} # Reminder: important_files is a set of filenames found in the repository. We convert them to lowercase to ensure that our checks are case-insensitive, as some repositories may have files with different cases (e.g., "README.md" vs "readme.md"). By normalizing the filenames to lowercase, we can reliably check for the presence of important files regardless of their case in the actual repository.
+
+    # We can also add some heuristics based on important files. For example, if we see a 'package.json' file, it's a strong signal that the project uses Node.js, even if we didn't detect any .js files (e.g. if it's a monorepo with separate frontend/backend folders).
+
+    # TODO: remove the if statements later
+
+    # if "requirements.txt" in lower_important_files or "pyproject.toml" in lower_important_files:
+    #     detected_technologies.add("Python")
+
+    # if "package.json" in lower_important_files:
+    #     detected_technologies.add("Node.js")
+
+    # if "dockerfile" in lower_important_files or "docker-compose.yml" in lower_important_files:
+    #     detected_technologies.add("Docker")
+
+    # if "cargo.toml" in lower_important_files:
+    #     detected_technologies.add("Rust")
+
+    # if "go.mod" in lower_important_files:
+    #     detected_technologies.add("Go")
+
+    # if "pom.xml" in lower_important_files or "build.gradle" in lower_important_files:
+    #     detected_technologies.add("Java")
+
+    # if "composer.json" in lower_important_files:
+    #     detected_technologies.add("PHP")
+
+    # if "gemfile" in lower_important_files:
+    #     detected_technologies.add("Ruby")
+
+    # if "cmakelists.txt" in lower_important_files:
+    #     detected_technologies.add("CMake")
+
+    # if "makefile" in lower_important_files:
+    #     detected_technologies.add("Make")
+
+    for technology, markers in FILE_TECHNOLOGY_MAP.items():
+        if lower_important_files & markers: # The use of & is checking for an intersection between the set of important files found in the repository and the set of marker files associated with a particular technology. If there is any overlap (i.e., if the intersection of the two sets is not empty), it indicates that at least one of the marker files for that technology is present in the repository, which is a strong signal that the technology is being used. This allows us to infer the presence of certain technologies based on key configuration or dependency files, even if we don't see a large number of source code files with specific extensions.
+            detected_technologies.add(technology)
+
+    return sorted(detected_technologies)
+
+
+def analyse_repository_structure(repository_path: Path) -> dict:
+    """
+    Traverse the extracted repository and collect structural information.
 
     This function walks the repository directory tree while ignoring large
-    dependency folders that would distort analysis.
+    dependency folders and build artefacts that would distort analysis.
+
+    It also:
+    - records important project files
+    - infers likely technologies
+    - applies a simple large-repository heuristic
 
     Args:
         repository_path:
@@ -369,30 +520,60 @@ def analyse_repository_structure(repository_path: Path) -> dict[str, str]:
     """
 
     file_count = 0
-    extensions = set()
+    extensions_found = set()
     directories_seen = set()
+    important_files_found = set()
+    candidate_files_to_read = [] # This is where we will collect paths to important files that we want to read and include in the LLM input for summarization. For example, if we find a README.md file, we would add its path to this list so that we can read its contents later and provide it as context to the LLM when generating the repository summary.
 
-    for root, dirs, files in os.walk(repository_path):
+    for root, dirs, files in os.walk(repository_path): # The os.walk returns 3 values: the current directory path (root), a list of subdirectories in the current directory (dirs), and a list of files in the current directory (files). We can use these values to traverse the entire directory tree of the repository and collect information about the files and directories present. The os.walk function is a convenient way to perform a recursive traversal of a directory structure, allowing us to easily analyze all files and subdirectories within the repository.
 
         # Remove ignored directories so os.walk never enters them
         dirs[:] = [d for d in dirs if d not in IGNORED_DIRECTORIES] # [:] is a special syntax I've never come across before! It allows us to modify the 'dirs' list in place, which is necessary for os.walk to recognize the changes and skip the ignored directories during traversal.
 
-        for file in files:
-            file_count += 1
-            suffix = Path(file).suffix.lower() # This is a convenient way to get the file extension from a filename. The suffix property of a Path object returns the file extension, including the leading dot (e.g., '.py' for Python files). We convert it to lowercase to ensure that we treat files with the same extension but different cases (e.g., '.PY' vs '.py') as the same type of file.
-            if suffix:
-                extensions.add(suffix) # extensions is a set, so it will automatically handle duplicates and only keep unique file extensions.
-
         directories_seen.add(Path(root).name) # This adds the name of the current directory to the set of directories seen. We use Path(root).name to get just the name of the directory without the full path, which allows us to easily check against our IGNORED_DIRECTORIES set in future iterations.
+
+        for file_name in files:
+            file_count += 1
+
+            suffix = Path(file_name).suffix.lower() # This is a convenient way to get the file extension from a filename. The suffix property of a Path object returns the file extension, including the leading dot (e.g., '.py' for Python files). We convert it to lowercase to ensure that we treat files with the same extension but different cases (e.g., '.PY' vs '.py') as the same type of file.
+            if suffix:
+                extensions_found.add(suffix) # extensions is a set, so it will automatically handle duplicates and only keep unique file extensions.
+
+            lower_file_name = file_name.lower() # We convert the filename to lowercase to ensure that our checks for important files are case-insensitive, as some repositories may have files with different cases (e.g., "README.md" vs "readme.md"). By normalizing the filenames to lowercase, we can reliably check for the presence of important files regardless of their case in the actual repository.  
+
+            if lower_file_name in IMPORTANT_FILENAMES:
+                important_files_found.add(lower_file_name) # This adds the lowercase filename to the set of important files found in the repository. We will use this set later to help infer the technologies used in the project based on the presence of key configuration or dependency files.
+
+                full_file_path = Path(root) / file_name
+                relative_file_path = full_file_path.relative_to(repository_path) # This converts the full file path to a relative path with respect to the repository root directory. This is useful for readability and for providing context to the LLM, as it allows us to show the file paths in a way that is relative to the structure of the repository rather than using absolute paths that may be less meaningful.
+                candidate_files_to_read.append(str(relative_file_path)) # This adds the full path to the important file to our list of candidate files to read for LLM input. We will later read the contents of these files and include them as context when generating the repository summary with the LLM, as they often contain valuable information about the project, such as its purpose (README.md), dependencies (requirements.txt, package.json), build configuration (pom.xml, build.gradle), and more.
+
+    inferred_technologies = infer_technologies_from_files(
+        extensions=extensions_found, 
+        important_files=important_files_found,
+    )
+
+    analysis_mode= "broad"
+
+    if file_count > MAX_FILES_FOR_BROAD_ANALYSIS:
+        analysis_mode = "selective"
 
     return {
         "file_count": file_count,
-        "extensions": sorted(extensions),
-        "directories": sorted(directories_seen)
+        "extensions": sorted(extensions_found),
+        "directories": sorted(directories_seen),
+        "important_files": sorted(important_files_found),
+        "candidate_files_to_read": sorted(candidate_files_to_read),
+        "technologies": inferred_technologies,
+        "analysis_mode": analysis_mode,
     }
 
 
+
+############################
 # All the action happens below - we've declared fns and classes - now we put everything together.
+############################
+
 
 @app.get("/") # No line spaces below the decorator, otherwise FastAPI won't recognize this function as an endpoint handler.
 def root() -> dict[str, str]:
@@ -453,12 +634,13 @@ def summarize_repository(request: SummarizeRequest) -> SummarizeResponse:
 
     return SummarizeResponse(
         summary=(
-            f"Repository '{owner}/{repository_name}' was downloaded and extracted successfully."
+            f"Repository '{owner}/{repository_name}' was downloaded, extracted and analysed successfully."
         ),
-        technologies=["We'll get to that later"],
+        technologies=analysis["technologies"] or ["Unknown"], # If we couldn't infer any technologies, we return "Unknown" to indicate that the analysis did not yield any results in that area. This is just a placeholder for now, as our technology inference is still very basic. In the next steps, we will implement more sophisticated analysis to better identify the technologies used in the project, which should lead to more accurate and informative summaries.
         structure=(
             f"Total files analysed: {analysis['file_count']}. "
-            f"Detected files extensions: {', '.join(analysis['extensions'][:10])}. " # We limit to the first 10 extensions for brevity, as some repositories may have a large number of different file types. This is just a placeholder to show that we can analyze the repository contents and extract useful information from it. In the next steps, we will implement more detailed analysis of the repository structure and contents to generate a meaningful summary.
-            f"Directories found: {', '.join(analysis['directories'][:10])}. "
+            f"Detected file extensions: {', '.join(analysis['extensions'][:10])}. " # We limit to the first 10 extensions for brevity, as some repositories may have a large number of different file types. This is just a placeholder to show that we can analyze the repository contents and extract useful information from it. In the next steps, we will implement more detailed analysis of the repository structure and contents to generate a meaningful summary.
+            f"Important files found: {', '.join(analysis['important_files'][:10]) or 'None'}. "
+            f"Analysis mode: {analysis['analysis_mode']}."
         ),
     )

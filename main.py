@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
 """
-EDIT: 
-
-So far we haven't reached out to the internet yet. We've just done some basic URL validation and parsing, and returned a placeholder response. The next steps will be to download the repository, analyse its contents, and generate a real summary using an LLM.
-We've created a FastAPI app that starts a server using Uvicorn. The app has two endpoints: a root endpoint ("/") that returns a simple message to confirm the API is running, and a "/summarize" endpoint that accepts a POST request with a GitHub repository URL, validates it, and returns a placeholder summary response.
-
 Main FastAPI application for the Nebius assignment project.
 
-this is the second skeleton verion of the service.
-
 At this stage, the /summarize endpoint:
-- accepts a Github repo URL
-- validates that it looks like a public Github repo URL
-- extract the repo owner and name
-- returns a placeholder response
+- accepts a GitHub repository URL
+- validates that it looks like a public GitHub repository URL
+- extracts the repository owner and name
+- downloads the repository ZIP archive
+- extracts the repository to a temporary folder
+- returns a placeholder response using real extracted repository information
 
 Run:
     uvicorn main:app --reload
 
 Then open:
     http://127.0.0.1:8000/docs
-        
 """
 
-from urllib import parse
+from pathlib import Path # This is a convenient way to work with file paths in a platform-independent way. It provides an object-oriented interface for handling filesystem paths, making it easier to read and write code that works across different operating systems.
+import shutil # This is a Python module that provides a higher-level interface for file operations, such as copying and removing files and directories. We will use it to extract ZIP files and clean up temporary directories.
+import tempfile # This module provides a way to create temporary files and directories. We will use it to create a temporary directory for extracting the downloaded repository ZIP file, which allows us to avoid cluttering the filesystem with intermediate files and ensures that they are cleaned up automatically when we're done.
+import zipfile # This module provides tools for working with ZIP archives. We will use it to extract the contents of the downloaded repository ZIP file so that we can analyze the files within the repository.
+import requests # This is a popular third-party library for making HTTP requests in Python. We will use it to download the ZIP archive of the GitHub repository. It provides a simple and intuitive API for sending HTTP requests and handling responses, making it easier to interact with web resources compared to using the built-in urllib library.
+
 from urllib.parse import urlparse # This allows us to take a URL and split into different parts that we can dissect - we'd have to do this manually otherwise.
 
 from fastapi import FastAPI, HTTPException # HTTPException is a special exception class provided by FastAPI that allows us to return HTTP error responses with specific status codes and messages when something goes wrong in our endpoint handlers.
@@ -67,7 +66,7 @@ class SummarizeResponse(BaseModel): # We use this for receiving responses from t
 app = FastAPI(
     title="GitHub Repository Summarizer API",
     description="API to summarize the contents of a GitHub repository.",
-    version="0.1.0",
+    version="0.3.0", # I've lost track of how many times I've updated the version number already! I don't think I change the ver number before.
     openapi_tags=[ # I added this after reading up on FastAPI's documentation about API tags. This allows us to group related endpoints together in the API docs.
         {
             "name": "Repository Analysis",
@@ -136,6 +135,86 @@ def parse_github_repository_url(githurb_url: str) -> tuple[str, str]:
         raise ValueError("Owner and repository name could not be determined") # This is a catch-all validation in case the previous checks missed something. For example, if the URL was "https://github.com/psf/.git", the previous checks would pass but we would end up with an empty repository name after stripping ".git". This check ensures that we have valid values for both owner and repository name. It's for a very edge case - keeping in to make complete.
 
     return owner, repository_name
+
+
+def build_github_archive_urls_for_zip_download(owner: str, repository_name: str) -> list[str]:
+    """
+    Build the URLs for downloading the GitHub repository archive.
+    Even though we are given the repo URL, we can't be sure what the zip download URL is because it depends on the default branch of the repository. The default branch could be 'main', 'master', or something else. GitHub provides a standard URL format for downloading the repository as a ZIP file, which is:
+    https://github.com/{owner}/{repository_name}/archive/refs/heads/{default_branch}.zip
+    
+    So, in the code: we're going to guess the default branch is 'main' or 'master' or one of the other defaults.
+
+    EDIT: we can actually call the GitHub API to get the default branch name, so we don't have to guess! 
+    TODO: This is what I will implement in the next step.
+
+    Args:
+        owner:
+            The owner of the GitHub repository.
+        repository_name:
+            The name of the GitHub repository.
+
+    Returns:
+        A list of potential URLs to download the repository archive.
+    """
+
+    return [
+        f"https://github.com/{owner}/{repository_name}/archive/refs/heads/main.zip",
+        f"https://github.com/{owner}/{repository_name}/archive/refs/heads/master.zip"
+    ]
+
+
+def download_github_repository_as_zip(
+        owner: str, 
+        repository_name: str,
+        working_directory: Path,
+) -> Path:
+    """
+    Download the GitHub repository as a ZIP file into the supplied working directory.
+
+    This function tries to download the repository archive using potential default branch names until it succeeds or exhausts all options.
+
+    Args:
+        owner:
+            The owner of the GitHub repository.
+        repository_name:
+            The name of the GitHub repository.
+        working_directory:
+            The directory where the downloaded ZIP file will be saved.
+            
+    """
+    archive_urls = build_github_archive_urls_for_zip_download(owner, repository_name)
+
+    # zip_file_path = working_directory / "repository_name.zip" 
+    zip_file_path = working_directory / f"{repository_name}.zip"
+    
+    for archive_url in archive_urls:
+        try:
+            response = requests.get(archive_url, timeout=30, stream=True) # We set stream=True to download the file in chunks, which is more memory efficient for large files. The timeout parameter is set to 30 seconds to prevent hanging indefinitely if the server does not respond.
+        except requests.RequestException as error:
+            raise ValueError(
+                f"Failed to download Github repository archive from {archive_url}: {error}"
+            ) from error
+        
+        # This is the standard method of using Python requests to download a file from a URL and save it to disk. We check if the response status code is 200 (OK) before writing the content to a file. We write the content in chunks to avoid loading the entire file into memory at once, which is important for large repositories.
+        if response.status_code == 200:
+            with open(zip_file_path, "wb") as zip_file:
+                for chunk in response.iter_content(chunk_size=8192): # We iterate over the response content in chunks of 8192 bytes (8 KB) to efficiently write the file to disk without consuming too much memory.
+                    zip_file.write(chunk)
+
+            return zip_file_path
+        
+        if response.status_code == 404:
+            raise ValueError(
+                f"Github returned status {response.status_code} for URL {archive_url} while trying to download the repository archive."
+            )
+
+    raise ValueError(
+        "Could not download repository archive. "
+        "Please check the repository URL and try again."
+    )
+
+
 
 
 @app.get("/") # No line spaces below the decorator, otherwise FastAPI won't recognize this function as an endpoint handler.

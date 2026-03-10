@@ -131,9 +131,31 @@ FILE_TECHNOLOGY_MAP: dict[str, set[str]] = {
     "Make": {"makefile"},
 }
 
+FILE_PRIORITY_ORDER: dict[str, int] = {
+    "readme.md": 0,
+    "pyproject.toml": 1,
+    "requirements.txt": 2,
+    "setup.py": 3,
+    "setup.cfg": 4,
+    "pipfile": 5,
+    "package.json": 6,
+    "cargo.toml": 7,
+    "go.mod": 8,
+    "pom.xml": 9,
+    "build.gradle": 10,
+    "dockerfile": 11,
+    "docker-compose.yml": 12,
+    "makefile": 13,
+    "cmakelists.txt": 14,
+}
+
 
 MAX_FILES_FOR_BROAD_ANALYSIS = 2000 # This is a threshold for the maximum number of files we will analyze in detail when traversing the repository. If a repository contains more than this number of files, we will switch to a more high-level analysis approach that focuses on key files and directories rather than analyzing every single file. This is to ensure that our analysis remains efficient and does not get bogged down by very large repositories with thousands of files, which could lead to long processing times and increased resource usage.
 
+MAX_CANDIDATE_FILES_TO_READ = 12 # Candidate files are the important files we identify during repository traversal that we want to read and include as context for the LLM when generating the summary. This is a limit on how many of those candidate files we will actually read and include in the LLM input, to ensure that we stay within reasonable token limits for the LLM and avoid overwhelming it with too much information. We will prioritize which files to include based on their importance (e.g., README.md would be more important than a less informative file), but this is just a simple limit to keep our LLM input manageable.
+MAX_CHARACTERS_PER_FILE = 4000
+MAX_TOTAL_CONTEXT_CHARACTERS = 20000 # This is a limit on the total number of characters we will include from all candidate files combined when providing context to the LLM. This is to ensure that we stay within the token limits of the LLM and provide it with a manageable amount of information to work with when generating the repository summary. We will need to implement logic to prioritize which files and which parts of those files to include in the context based on their importance and relevance, while ensuring that we do not exceed this total character limit.
+# We need these max limits to limit the amount we send to the LLM, otherwise we might exceed the token limits of the model and get errors, or we might just overwhelm the model with too much information, which could lead to less coherent summaries. By setting these limits, we can ensure that we provide the LLM with a focused and relevant set of information about the repository while staying within the constraints of the model's input capabilities.
 
 class SummarizeRequest(BaseModel): # We use this for making requests to the /summarize endpoint. It defines the expected structure of the request body and allows FastAPI to automatically validate incoming requests against this model. If a request does not conform to this model, FastAPI will return a 422 Unprocessable Entity error with details about what was wrong with the request.
     """
@@ -459,39 +481,6 @@ def infer_technologies_from_files(
     lower_important_files = {file_name.lower() for file_name in important_files} # Reminder: important_files is a set of filenames found in the repository. We convert them to lowercase to ensure that our checks are case-insensitive, as some repositories may have files with different cases (e.g., "README.md" vs "readme.md"). By normalizing the filenames to lowercase, we can reliably check for the presence of important files regardless of their case in the actual repository.
 
     # We can also add some heuristics based on important files. For example, if we see a 'package.json' file, it's a strong signal that the project uses Node.js, even if we didn't detect any .js files (e.g. if it's a monorepo with separate frontend/backend folders).
-
-    # TODO: remove the if statements later
-
-    # if "requirements.txt" in lower_important_files or "pyproject.toml" in lower_important_files:
-    #     detected_technologies.add("Python")
-
-    # if "package.json" in lower_important_files:
-    #     detected_technologies.add("Node.js")
-
-    # if "dockerfile" in lower_important_files or "docker-compose.yml" in lower_important_files:
-    #     detected_technologies.add("Docker")
-
-    # if "cargo.toml" in lower_important_files:
-    #     detected_technologies.add("Rust")
-
-    # if "go.mod" in lower_important_files:
-    #     detected_technologies.add("Go")
-
-    # if "pom.xml" in lower_important_files or "build.gradle" in lower_important_files:
-    #     detected_technologies.add("Java")
-
-    # if "composer.json" in lower_important_files:
-    #     detected_technologies.add("PHP")
-
-    # if "gemfile" in lower_important_files:
-    #     detected_technologies.add("Ruby")
-
-    # if "cmakelists.txt" in lower_important_files:
-    #     detected_technologies.add("CMake")
-
-    # if "makefile" in lower_important_files:
-    #     detected_technologies.add("Make")
-
     for technology, markers in FILE_TECHNOLOGY_MAP.items():
         if lower_important_files & markers: # The use of & is checking for an intersection between the set of important files found in the repository and the set of marker files associated with a particular technology. If there is any overlap (i.e., if the intersection of the two sets is not empty), it indicates that at least one of the marker files for that technology is present in the repository, which is a strong signal that the technology is being used. This allows us to infer the presence of certain technologies based on key configuration or dependency files, even if we don't see a large number of source code files with specific extensions.
             detected_technologies.add(technology)
@@ -546,7 +535,11 @@ def analyse_repository_structure(repository_path: Path) -> dict:
 
                 full_file_path = Path(root) / file_name
                 relative_file_path = full_file_path.relative_to(repository_path) # This converts the full file path to a relative path with respect to the repository root directory. This is useful for readability and for providing context to the LLM, as it allows us to show the file paths in a way that is relative to the structure of the repository rather than using absolute paths that may be less meaningful.
-                candidate_files_to_read.append(str(relative_file_path)) # This adds the full path to the important file to our list of candidate files to read for LLM input. We will later read the contents of these files and include them as context when generating the repository summary with the LLM, as they often contain valuable information about the project, such as its purpose (README.md), dependencies (requirements.txt, package.json), build configuration (pom.xml, build.gradle), and more.
+                
+                # candidate_files_to_read.append(str(relative_file_path)) # This adds the full path to the important file to our list of candidate files to read for LLM input. We will later read the contents of these files and include them as context when generating the repository summary with the LLM, as they often contain valuable information about the project, such as its purpose (README.md), dependencies (requirements.txt, package.json), build configuration (pom.xml, build.gradle), and more.
+                # We're getting \\ output, using the above - this is normal, it's how JSON treats backslashes in strings. However, it can be a bit messy to read in the output. By using as_posix(), we can convert the path to use forward slashes (/) instead of backslashes (\), which is more standard and easier to read, especially in the context of file paths. This way, the output will show paths like "src/main.py" instead of "src\\main.py", making it clearer and more consistent across different platforms.
+                # So I looked up the documentation for pathlib and found that as_posix() is a method that returns the string representation of the path with forward slashes, regardless of the operating system. This is particularly useful when we want to ensure that our file paths are represented in a consistent way, especially when working with APIs or systems that expect POSIX-style paths. By using as_posix(), we can avoid issues with backslashes being treated as escape characters in JSON strings and make our output more readable and standardized.
+                candidate_files_to_read.append(relative_file_path.as_posix()) # This adds the full path to the important file to our list of candidate files to read for LLM input. We will later read the contents of these files and include them as context when generating the repository summary with the LLM, as they often contain valuable information about the project, such as its purpose (README.md), dependencies (requirements.txt, package.json), build configuration (pom.xml, build.gradle), and more.
 
     inferred_technologies = infer_technologies_from_files(
         extensions=extensions_found, 
@@ -569,10 +562,151 @@ def analyse_repository_structure(repository_path: Path) -> dict:
     }
 
 
+def choose_candidate_files_to_read(
+    candidate_files: list[str]
+) -> list[str]:
+    """
+    Choose the most useful candidate files to read for building repository context.
 
-############################
+    Files are ranked so that highly informative files such as README.md and
+    dependency/configuration files are preferred.
+
+    Args:
+        candidate_files:
+            Relative file paths of candidate files found during repository analysis.
+
+    Returns:
+        A sorted and prioritised list of candidate file paths to read.
+    """
+
+    def sort_key(relative_path: str) -> tuple[int, str]:
+        file_name = Path(relative_path).name.lower() # We extract the filename from the relative path and convert it to lowercase to ensure that our sorting is case-insensitive, as some repositories may have files with different cases (e.g., "README.md" vs "readme.md"). By normalizing the filenames to lowercase, we can reliably apply our priority sorting based on the presence of important files regardless of their case in the actual repository.
+
+        priority = FILE_PRIORITY_ORDER.get(file_name, 100) # We look up the filename in our FILE_PRIORITY_ORDER mapping to get its priority value. If the filename is not found in the mapping, we assign it a default priority of 100, which means it will be sorted after all known important files. This allows us to prioritize certain key files (e.g., README.md, requirements.txt) that are likely to contain valuable information about the project when selecting which candidate files to read for LLM context.
+
+        return priority, relative_path.lower() # We return a tuple containing the priority and the relative path. The sorting will first be based on priority (with lower values being higher priority), and then by relative path as a tiebreaker for files with the same priority.
+
+    sorted_files: list[str] = sorted(candidate_files, key=sort_key) # We sort the candidate files using the sort_key function defined above, which prioritizes important files based on our FILE_PRIORITY_ORDER mapping. This ensures that when we select the top candidate files to read for LLM context, we are choosing the most informative files that are likely to provide valuable insights about the project.
+    # OK, I had trouble getting my head around how this sorted worked - it seems as though this is JUST how it's done in Python - you define a sort key function that takes an item and returns a value (or tuple) that represents the sorting criteria for that item. Then, when you call sorted() with that key function, it will use the values returned by the key function to determine the order of the items in the sorted output. In our case, the sort_key function returns a tuple of (priority, relative_path), so the sorting will first be based on priority (with lower values being higher priority), and then by relative path as a tiebreaker for files with the same priority.
+    # Just going with the definition for now and accepting this is how it works.
+
+    return sorted_files[:MAX_CANDIDATE_FILES_TO_READ] # We return only the top candidate files up to our defined limit (MAX_CANDIDATE_FILES_TO_READ) to ensure that we stay within reasonable token limits for the LLM and provide it with a focused set of information about the repository. This allows us to include the most important files in the LLM context while avoiding overwhelming it with too much information, which could lead to less coherent summaries.
+
+# We only will use this fn with the candidate files we identified as important during repository analysis, such as README.md, requirements.txt, package.json, etc. These files often contain valuable information about the project that can help the LLM generate a more accurate and informative summary. By reading the contents of these files and including them as context for the LLM, we can provide it with insights into the project's purpose, dependencies, configuration, and more, which can lead to better summarization results.
+def read_repository_text_file( 
+        repository_path: Path,
+        relative_file_path: str,
+        max_characters: int = MAX_CHARACTERS_PER_FILE,
+) -> str:
+    """
+    Read a text file from the repository safely and return trimmed content.
+
+    Args:
+        repository_path:
+            Path to the extracted repository root directory.
+        relative_file_path:
+            File path relative to the repository root.
+        max_characters:
+            Maximum number of characters to return.
+
+    Returns:
+        Trimmed file content as text.
+
+    Raises:
+        ValueError:
+            If the file cannot be read as text.
+    """
+    
+    full_file_path = repository_path / relative_file_path
+
+    try:
+        content = full_file_path.read_text(encoding="utf-8") # We attempt to read the file as UTF-8 encoded text, which is a common encoding for text files. If the file is not a valid text file or contains characters that cannot be decoded as UTF-8, this will raise a UnicodeDecodeError, which we catch and re-raise as a ValueError with a more descriptive message. This allows us to handle cases where we might encounter binary files or files with unsupported encodings gracefully, without crashing the entire analysis process.
+    except UnicodeDecodeError:
+        raise ValueError(
+            f"File {relative_file_path} could not be read as text."
+        )
+    except OSError as error:
+        raise ValueError(
+            f"An error occurred while reading file {relative_file_path}: {error}"
+        ) from error
+
+    return content[:max_characters] # We return only the first max_characters of the file content to ensure that we stay within reasonable token limits for the LLM when providing context. This allows us to include a portion of the file's content that is likely to contain valuable information about the project while avoiding overwhelming the LLM with too much text, which could lead to less coherent summaries. The max_characters limit can be adjusted based on the expected size of important files and the token limits of the LLM we are using.
+
+
+def build_repository_context(
+    repository_path: Path,
+    analysis: dict,
+) -> str:
+    """
+    Build a structured text context describing the repository.
+
+    This context is designed to be passed to an LLM in the next step.
+
+    Args:
+        repository_path:
+            Path to the extracted repository root directory.
+        analysis:
+            Repository analysis metadata.
+
+    Returns:
+        Structured text context containing repository metadata and selected
+        file contents.
+    """
+
+    chosen_files = choose_candidate_files_to_read(
+        analysis["candidate_files_to_read"] # Where did we get analysis["candidate_files_to_read"] from? Search for ***analysis***. We made a fn called analyse_repository_structure(extracted_repository_path). This is the list of candidate files that we identified during the repository analysis phase as potentially important for understanding the project. These files are typically configuration files, dependency files, and documentation files that can provide valuable insights into the project's structure, dependencies, and purpose. By passing this list to the chose_candidate_files_to_read function, we can prioritize and select the most informative files to read and include in the context for the LLM when generating the repository summary.
+        # Just to be clear, we have access to analysis because it's passed into the fn.
+    )
+
+    context_parts = [
+        "REPOSITORY OVERVIEW",  # Section header used to structure the prompt for the LLM.
+        f"File count: {analysis['file_count']}",
+        f"Analysis mode: {analysis['analysis_mode']}",
+        f"Detected technologies: {', '.join(analysis['technologies'] or ['Unknown'])}",
+        f"Detected file extensions: {', '.join(analysis['extensions'][:20]) or 'None'}",  
+        # Limit to the first 20 extensions for brevity. Large repositories may contain
+        # many different file types, and including too many adds noise to the LLM prompt.
+        f"Important files found: {', '.join(analysis['important_files'][:20]) or 'None'}",  
+        # Limit to the first 20 items to keep the prompt concise. Large repositories
+        # may contain many files, and including too many reduces signal for the LLM.
+        "",  
+        # Blank line used to visually separate sections in the generated LLM prompt.
+        "SELECTED FILE CONTENTS",  
+        # Header for the section where selected file contents will be appended.
+    ]
+
+    total_characters_used = sum(len(part) for part in context_parts)  # We start with the character count of the initial context parts, which includes the repository overview and section headers. This gives us a baseline character count before we add any file contents.
+    # Why count here? Why not count at the end? We need to keep track of the total characters used as we add file contents to ensure that we do not exceed the maximum token limits for the LLM. By counting characters as we go, we can stop adding file contents once we reach a certain threshold (e.g., MAX_CHARACTERS_FOR_LLM_CONTEXT) to ensure that our final context remains within the limits that the LLM can handle effectively. If we waited until the end to count, we might end up with a context that is too large and would need to be truncated, which could lead to loss of important information and less coherent summaries.
+
+    for relative_file_path in chosen_files:
+        try:
+            file_content = read_repository_text_file(
+                repository_path=repository_path,
+                relative_file_path=relative_file_path,
+            )
+        except ValueError:
+            continue  # If we encounter an error reading a file (e.g., it's not a valid text file), we skip it and move on to the next one. This allows us to handle cases where some of the candidate files may not be readable as text without crashing the entire context-building process.
+            # I think this part is clever - simple, but elegant.
+            
+        section_text = (
+            f"\nFILE: {relative_file_path}\n"  # We add a header for each file that includes its relative path, which provides context to the LLM about where this file is located within the repository structure.
+            f"{'-' * 40}\n"  # We add a separator line to visually distinguish the content of different files in the context provided to the LLM. This can help the LLM understand that the content is from different sources and may improve its ability to parse and utilize the information effectively when generating the summary.
+            f"{file_content}\n"  # We add the actual content of the file,
+        )
+        
+        if total_characters_used + len(section_text) > MAX_TOTAL_CONTEXT_CHARACTERS:
+            break  # If adding the next file's content would exceed our defined character limit for the LLM context, we stop adding more files. This ensures that we stay within the token limits of the LLM while still providing it with a rich context that includes important information about the repository.
+
+        context_parts.append(section_text)  # If we haven't exceeded the character limit, we add the section text for this file to our context parts, which will be combined into the final context string for the LLM.
+        total_characters_used += len(section_text)  # We update our total character count to include the newly added file content, so that we can continue to check against our character limit as we add more files.
+
+    return "\n".join(context_parts)  # We join all the parts of our context with newline characters to create a single string that will be passed to the LLM. This context includes an overview of the repository as well as the contents of selected important files, providing the LLM with valuable information to generate a meaningful summary of the repository.
+
+
+
+####################################################################################
 # All the action happens below - we've declared fns and classes - now we put everything together.
-############################
+####################################################################################
 
 
 @app.get("/") # No line spaces below the decorator, otherwise FastAPI won't recognize this function as an endpoint handler.
@@ -620,27 +754,43 @@ def summarize_repository(request: SummarizeRequest) -> SummarizeResponse:
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
+    # TODO: remove 2 lines below later when code is working
+    # try:
+    #     analysis = analyse_repository_structure(extracted_repository_path) # ***analysis*** is a dictionary containing metadata about the repository that we can use for summarization. For now, it includes things like file count, detected file extensions, important files found, inferred technologies, and a simple heuristic for analysis mode based on the size of the repository. This is just a starting point to show that we can analyze the repository contents and extract useful information from it. In the next steps, we will implement more detailed analysis of the repository structure and contents to generate a meaningful summary.
     try:
-        # Count top-level items purely as a quick proof that extraction worked.
-        # This is not a real analysis of the repository, just a placeholder to
-        # show that we can work with the extracted files. In the next steps,
-        # we will implement real analysis of the repository structure and contents.
         analysis = analyse_repository_structure(extracted_repository_path)
+        repository_context = build_repository_context(
+            repository_path=extracted_repository_path,
+            analysis=analysis,
+        )
     finally:
-        # Clean up the temporary directory whether the above succeeds or fails.
-        # At this stage, we only need the repository long enough to prove that
-        # download and extraction worked.
-        shutil.rmtree(temporary_directory, ignore_errors=True)
+        shutil.rmtree(temporary_directory, ignore_errors=True) # Remove the entire directory tree at temporary_directory, which includes the downloaded ZIP file and the extracted repository. We use ignore_errors=True to ensure that we don't raise an exception if there is an issue with deleting the files (e.g., if they were already deleted or if there are permission issues), as we want to make sure that we clean up any temporary resources we created during the process regardless of any issues that may arise during cleanup.
+
+    # TODO: remove the below later when working
+    # return SummarizeResponse(
+    #     summary=(
+    #         f"Repository '{owner}/{repository_name}' was downloaded, extracted and analysed successfully."
+    #     ),
+    #     technologies=analysis["technologies"] or ["Unknown"], # If we couldn't infer any technologies, we return "Unknown" to indicate that the analysis did not yield any results in that area. This is just a placeholder for now, as our technology inference is still very basic. In the next steps, we will implement more sophisticated analysis to better identify the technologies used in the project, which should lead to more accurate and informative summaries.
+    #     structure=(
+    #         f"Total files analysed: {analysis['file_count']}. "
+    #         f"Detected file extensions: {', '.join(analysis['extensions'][:10])}. " # We limit to the first 10 extensions for brevity, as some repositories may have a large number of different file types. This is just a placeholder to show that we can analyze the repository contents and extract useful information from it. In the next steps, we will implement more detailed analysis of the repository structure and contents to generate a meaningful summary.
+    #         f"Important files found: {', '.join(analysis['important_files'][:10]) or 'None'}. "
+    #         f"Analysis mode: {analysis['analysis_mode']}."
+    #     ),
+    # )
 
     return SummarizeResponse(
         summary=(
-            f"Repository '{owner}/{repository_name}' was downloaded, extracted and analysed successfully."
+            f"Repository '{owner}/{repository_name}' was downloaded, extracted, "
+            "analysed, and prepared for LLM summarisation."
         ),
-        technologies=analysis["technologies"] or ["Unknown"], # If we couldn't infer any technologies, we return "Unknown" to indicate that the analysis did not yield any results in that area. This is just a placeholder for now, as our technology inference is still very basic. In the next steps, we will implement more sophisticated analysis to better identify the technologies used in the project, which should lead to more accurate and informative summaries.
+        technologies=analysis["technologies"] or ["Unknown"],
         structure=(
             f"Total files analysed: {analysis['file_count']}. "
-            f"Detected file extensions: {', '.join(analysis['extensions'][:10])}. " # We limit to the first 10 extensions for brevity, as some repositories may have a large number of different file types. This is just a placeholder to show that we can analyze the repository contents and extract useful information from it. In the next steps, we will implement more detailed analysis of the repository structure and contents to generate a meaningful summary.
-            f"Important files found: {', '.join(analysis['important_files'][:10]) or 'None'}. "
+            f"Important files read: "
+            f"{', '.join(choose_candidate_files_to_read(analysis['candidate_files_to_read'])) or 'None'}. "
+            f"Context length prepared for LLM: {len(repository_context)} characters. "
             f"Analysis mode: {analysis['analysis_mode']}."
         ),
     )

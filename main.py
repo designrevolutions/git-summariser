@@ -2,13 +2,24 @@
 """
 Main FastAPI application for the Nebius assignment project.
 
-At this stage, the /summarize endpoint:
-- accepts a GitHub repository URL
-- validates that it looks like a public GitHub repository URL
-- extracts the repository owner and name
-- downloads the repository ZIP archive
-- extracts the repository to a temporary folder
-- returns a placeholder response using real extracted repository information
+This version of the service can now download a public GitHub repository,
+extract it locally, and perform a basic structural analysis of the project.
+
+The /summarize endpoint currently performs the following steps:
+
+1. Validate the provided GitHub repository URL.
+2. Extract the repository owner and name from the URL.
+3. Verify that the repository exists on GitHub.
+4. Download the repository as a ZIP archive.
+5. Extract the repository into a temporary working directory.
+6. Traverse the repository while ignoring large dependency directories.
+7. Collect basic structural information such as:
+   - total file count
+   - file extensions used
+   - directory names present in the project
+
+This structural metadata will later be used as input to an LLM to generate
+a human-readable repository summary.
 
 Run:
     uvicorn main:app --reload
@@ -27,6 +38,23 @@ from urllib.parse import urlparse # This allows us to take a URL and split into 
 
 from fastapi import FastAPI, HTTPException # HTTPException is a special exception class provided by FastAPI that allows us to return HTTP error responses with specific status codes and messages when something goes wrong in our endpoint handlers.
 from pydantic import BaseModel, Field # Pydantic automatically validates incoming data. If the data is invalid, FastAPI returns an error and the endpoint function is never executed.
+import os
+
+
+IGNORED_DIRECTORIES = {
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "target",
+    "vendor",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".git",
+}
 
 
 class SummarizeRequest(BaseModel): # We use this for making requests to the /summarize endpoint. It defines the expected structure of the request body and allows FastAPI to automatically validate incoming requests against this model. If a request does not conform to this model, FastAPI will return a 422 Unprocessable Entity error with details about what was wrong with the request.
@@ -325,6 +353,47 @@ def download_and_extract_repository(owner: str, repository_name: str) -> tuple[P
         raise # This is the standard way to re-raise the original exception after performing cleanup. The 'raise' statement without any arguments will re-raise the last exception that was active in the current scope, allowing us to preserve the original error message and stack trace while ensuring that we clean up any temporary resources we created before the error occurred.
 
 
+def analyse_repository_structure(repository_path: Path) -> dict[str, str]:
+    """
+    Traverse the extracted repository and collect basic structural information.
+
+    This function walks the repository directory tree while ignoring large
+    dependency folders that would distort analysis.
+
+    Args:
+        repository_path:
+            Path to the extracted repository root directory.
+
+    Returns:
+        Dictionary containing repository metadata useful for summarisation.
+    """
+
+    file_count = 0
+    extensions = set()
+    directories_seen = set()
+
+    for root, dirs, files in os.walk(repository_path):
+
+        # Remove ignored directories so os.walk never enters them
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRECTORIES] # [:] is a special syntax I've never come across before! It allows us to modify the 'dirs' list in place, which is necessary for os.walk to recognize the changes and skip the ignored directories during traversal.
+
+        for file in files:
+            file_count += 1
+            suffix = Path(file).suffix.lower() # This is a convenient way to get the file extension from a filename. The suffix property of a Path object returns the file extension, including the leading dot (e.g., '.py' for Python files). We convert it to lowercase to ensure that we treat files with the same extension but different cases (e.g., '.PY' vs '.py') as the same type of file.
+            if suffix:
+                extensions.add(suffix) # extensions is a set, so it will automatically handle duplicates and only keep unique file extensions.
+
+        directories_seen.add(Path(root).name) # This adds the name of the current directory to the set of directories seen. We use Path(root).name to get just the name of the directory without the full path, which allows us to easily check against our IGNORED_DIRECTORIES set in future iterations.
+
+    return {
+        "file_count": file_count,
+        "extensions": sorted(extensions),
+        "directories": sorted(directories_seen)
+    }
+
+
+# All the action happens below - we've declared fns and classes - now we put everything together.
+
 @app.get("/") # No line spaces below the decorator, otherwise FastAPI won't recognize this function as an endpoint handler.
 def root() -> dict[str, str]:
     """
@@ -375,8 +444,7 @@ def summarize_repository(request: SummarizeRequest) -> SummarizeResponse:
         # This is not a real analysis of the repository, just a placeholder to
         # show that we can work with the extracted files. In the next steps,
         # we will implement real analysis of the repository structure and contents.
-        top_level_items = list(extracted_repository_path.iterdir())
-        top_level_item_count = len(top_level_items)
+        analysis = analyse_repository_structure(extracted_repository_path)
     finally:
         # Clean up the temporary directory whether the above succeeds or fails.
         # At this stage, we only need the repository long enough to prove that
@@ -385,13 +453,12 @@ def summarize_repository(request: SummarizeRequest) -> SummarizeResponse:
 
     return SummarizeResponse(
         summary=(
-            f"Repository '{owner}/{repository_name}' was downloaded and extracted "
-            "successfully."
+            f"Repository '{owner}/{repository_name}' was downloaded and extracted successfully."
         ),
-        technologies=["Unknown"],
+        technologies=["We'll get to that later"],
         structure=(
-            f"Extracted repository folder: {extracted_repository_path.name}. "
-            f"Top-level item count: {top_level_item_count}. "
-            "Detailed repository traversal will be added in the next step."
+            f"Total files analysed: {analysis['file_count']}. "
+            f"Detected files extensions: {', '.join(analysis['extensions'][:10])}. " # We limit to the first 10 extensions for brevity, as some repositories may have a large number of different file types. This is just a placeholder to show that we can analyze the repository contents and extract useful information from it. In the next steps, we will implement more detailed analysis of the repository structure and contents to generate a meaningful summary.
+            f"Directories found: {', '.join(analysis['directories'][:10])}. "
         ),
     )

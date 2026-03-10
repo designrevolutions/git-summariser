@@ -76,7 +76,7 @@ app = FastAPI(
 )
 
 
-def parse_github_repository_url(githurb_url: str) -> tuple[str, str]:
+def parse_github_repository_url(github_url: str) -> tuple[str, str]:
     """
     Validate and parse a Github repository URL.
 
@@ -105,7 +105,7 @@ def parse_github_repository_url(githurb_url: str) -> tuple[str, str]:
             If the URL is invalid or does not point to a GitHub repository URL.
     """
 
-    parsed_url = urlparse(githurb_url) # We now have an object with all the different parts - all done in one line thanks to the urlparse function!
+    parsed_url = urlparse(github_url) # We now have an object with all the different parts - all done in one line thanks to the urlparse function!
 
     # Ensure the scheme is http or https
     if parsed_url.scheme not in {"http", "https"}:
@@ -185,6 +185,28 @@ def download_github_repository_as_zip(
     """
     archive_urls = build_github_archive_urls_for_zip_download(owner, repository_name)
 
+    # ####==== Start of hack
+    # I added this as the code would only fail after tryingt o download bad zips for 30 seconds each time
+    # This isn't the best way to check if a repository exists, but it allows us to fail fast if the repository doesn't exist or isn't accessible, without having to wait for multiple failed download attempts. In the next step, we will implement a more robust method of checking repository existence and getting the default branch name using the GitHub API, which will eliminate the need for this hack.
+    # I'll fix with using API later
+    # Not sure if the code is working! # TODO: check later
+    try:
+        response = requests.head( # Only get headers, not the full content, to check if the repository exists and is accessible. This is a much faster way to check if the repository exists compared to trying to download the ZIP file, as it doesn't require downloading any content.
+            f"https://github.com/{owner}/{repository_name}",
+            timeout=10
+        )
+    except requests.RequestException as error:
+        raise ValueError(
+            f"Failed to connect to GitHub to verify repository existence: {error}"
+        ) from error
+
+    if response.status_code >= 400:
+        raise ValueError(
+            f"Repository '{owner}/{repository_name}' could not be accessed "
+            f"(HTTP status {response.status_code})."
+        )
+    # ####==== End of hack
+
     # zip_file_path = working_directory / "repository_name.zip" 
     zip_file_path = working_directory / f"{repository_name}.zip"
     
@@ -205,9 +227,10 @@ def download_github_repository_as_zip(
             return zip_file_path
         
         if response.status_code == 404:
-            raise ValueError(
-                f"Github returned status {response.status_code} for URL {archive_url} while trying to download the repository archive."
-            )
+            # raise ValueError(
+            #     f"Github returned status {response.status_code} for URL {archive_url} while trying to download the repository archive."
+            # )
+            continue # If we get a 404, it likely means that the default branch name in that URL is incorrect (e.g. 'main' vs 'master'), so we can just try the next URL in the list without raising an error immediately. We only raise an error if all options are exhausted and we still haven't successfully downloaded the archive.
 
     raise ValueError(
         "Could not download repository archive. "
@@ -215,6 +238,91 @@ def download_github_repository_as_zip(
     )
 
 
+def extract_zip_file(zip_file_path: Path, extract_to_directory: Path) -> Path:
+    """
+    Extract a ZIP archive and return the extracted repository root folder.
+
+    GitHub archives usually unpack into a single top-level folder such as:
+        repository-name-main/
+
+    Args:
+        zip_file_path:
+            Path to the downloaded ZIP archive.
+        extract_to_directory:
+            Directory where the ZIP should be extracted.
+
+    Returns:
+        Path to the extracted repository root folder.
+
+    Raises:
+        ValueError:
+            If extraction fails or no extracted repository folder is found.
+    """
+
+    try:
+        with zipfile.ZipFile(zip_file_path, "r") as zip_file: # This is the standard way to open a ZIP file in Python using the zipfile module. We use a context manager (the with statement) to ensure that the file is properly closed after we're done with it, even if an error occurs during extraction.
+            zip_file.extractall(extract_to_directory)
+    except zipfile.BadZipFile as error:
+        raise ValueError(f"Failed to extract ZIP file {zip_file_path}: {error} - most likely it's not a valid zip archive, else try downloading again.") from error
+    
+    extract_to_directories = [
+        path for path in extract_to_directory.iterdir() if path.is_dir()
+    ]
+
+    if not extract_to_directories: # This is a sanity check to ensure that we actually extracted something and that there is a directory in the extracted folder. If the ZIP file was valid but did not contain any directories, this would catch that case.
+        raise ValueError(f"No repository folder found in {extract_to_directory}")
+
+    if len(extract_to_directories) == 1:
+        return extract_to_directories[0] # This is a sanity check to ensure that we only have one top-level directory in the extracted folder, which is what we expect from GitHub archives. If there are multiple directories, it could indicate that the ZIP file is not structured as expected.
+
+    # Fallback: choose the first directory in sorted order if multiple appear.
+    # In normal GitHub ZIP archives this should rarely be needed, but it keeps
+    # the function robust.
+    return sorted(extract_to_directories)[0]
+
+
+def download_and_extract_repository(owner: str, repository_name: str) -> tuple[Path, Path]:
+    """
+    Download and extract a GitHub repository into a temporary directory.
+
+    Args:
+        owner:
+            GitHub repository owner.
+        repository_name:
+            GitHub repository name.
+
+    Returns:
+        A tuple containing:
+            - path to the temporary working directory
+            - path to the extracted repository root directory
+
+    Raises:
+        ValueError:
+            If download or extraction fails.
+    """
+
+    # Create a temporary directory to work in. This ensures that we don't clutter the filesystem with intermediate files and that everything is cleaned up automatically when we're done.
+    temporary_directory = Path(tempfile.mkdtemp(prefix="repo_summarizer_"))
+    print(f"Temporary directory created at: {temporary_directory}") # I just wanted to check the location of where the temporary directory is being created, to make sure it's working as expected. This is especially useful for debugging purposes, as it allows us to inspect the contents of the temporary directory if something goes wrong during the download or extraction process.
+
+    try:
+        zip_file_path = download_github_repository_as_zip(
+            owner=owner, 
+            repository_name=repository_name, 
+            working_directory=temporary_directory,
+        )
+
+        extracted_repository_path = extract_zip_file(
+            zip_file_path=zip_file_path, 
+            extract_to_directory=temporary_directory,
+            )
+
+        return temporary_directory, extracted_repository_path
+    
+    except Exception:
+        # Clean up the temporary directory if anything goes wrong during download or extraction
+        shutil.rmtree(temporary_directory, ignore_errors=True)
+        raise # This is the standard way to re-raise the original exception after performing cleanup. The 'raise' statement without any arguments will re-raise the last exception that was active in the current scope, allowing us to preserve the original error message and stack trace while ensuring that we clean up any temporary resources we created before the error occurred.
 
 
 @app.get("/") # No line spaces below the decorator, otherwise FastAPI won't recognize this function as an endpoint handler.
@@ -227,52 +335,63 @@ def root() -> dict[str, str]:
 
     Example response:
         {
-            "message": "Repository Summarizer API is running"
+            "message": "Hello, Nebius assignment project! The API is running."
         }
     """
-
+    print("Root endpoint was called")# I needed this because I was having problems - the server started but the browser showed nothing - same with Curl
     return {"message": "Hello, Nebius assignment project! The API is running."}
 
 # @app.post("/summarize", response_model=SummarizeResponse, tags=["Repository Analysis"])
 @app.post("/summarize", response_model=SummarizeResponse)
 def summarize_repository(request: SummarizeRequest) -> SummarizeResponse:
     """
-    Validate the GitHub URL and return a placeholder summary response.
+    Validate the GitHub URL, download the repository archive, and extract it.
 
-    At this stage, this endpoint does not yet:
-    - download the repository
-    - analyse file contents
+    At this stage, this endpoint still does not yet:
+    - traverse repository files
+    - analyse project structure
+    - detect technologies
     - call an LLM
 
-    It does:
+    It now does:
     - validate the GitHub URL
     - extract the repository owner and name
-    - return a more meaningful placeholder response
-
-    Args:
-        request:
-            The incoming request body containing the GitHub repository URL.
-
-    Returns:
-        A placeholder response containing parsed repository information.
-
-    Raises:
-        HTTPException:
-            If the GitHub URL is invalid.
+    - download the repository ZIP archive
+    - extract the repository locally
     """
-
 
     try:
         owner, repository_name = parse_github_repository_url(request.github_url)
+
+        temporary_directory, extracted_repository_path = download_and_extract_repository(
+            owner = owner,
+            repository_name = repository_name,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-        
+
+    try:
+        # Count top-level items purely as a quick proof that extraction worked.
+        # This is not a real analysis of the repository, just a placeholder to
+        # show that we can work with the extracted files. In the next steps,
+        # we will implement real analysis of the repository structure and contents.
+        top_level_items = list(extracted_repository_path.iterdir())
+        top_level_item_count = len(top_level_items)
+    finally:
+        # Clean up the temporary directory whether the above succeeds or fails.
+        # At this stage, we only need the repository long enough to prove that
+        # download and extraction worked.
+        shutil.rmtree(temporary_directory, ignore_errors=True)
 
     return SummarizeResponse(
         summary=(
-            f"Place holder summary for repository at {request.github_url}. "
-            "Real repository analysis will be added in the next steps."
+            f"Repository '{owner}/{repository_name}' was downloaded and extracted "
+            "successfully."
         ),
-        technologies=["Placeholder"],
-        structure="Placeholder project structure description."
+        technologies=["Unknown"],
+        structure=(
+            f"Extracted repository folder: {extracted_repository_path.name}. "
+            f"Top-level item count: {top_level_item_count}. "
+            "Detailed repository traversal will be added in the next step."
+        ),
     )

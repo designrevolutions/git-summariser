@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """
+EDIT: 
+
+So far we haven't reached out to the internet yet. We've just done some basic URL validation and parsing, and returned a placeholder response. The next steps will be to download the repository, analyse its contents, and generate a real summary using an LLM.
+We've created a FastAPI app that starts a server using Uvicorn. The app has two endpoints: a root endpoint ("/") that returns a simple message to confirm the API is running, and a "/summarize" endpoint that accepts a POST request with a GitHub repository URL, validates it, and returns a placeholder summary response.
+
 Main FastAPI application for the Nebius assignment project.
 
 this is the second skeleton verion of the service.
@@ -25,7 +30,7 @@ from fastapi import FastAPI, HTTPException # HTTPException is a special exceptio
 from pydantic import BaseModel, Field # Pydantic automatically validates incoming data. If the data is invalid, FastAPI returns an error and the endpoint function is never executed.
 
 
-class SummarizeRequest(BaseModel):
+class SummarizeRequest(BaseModel): # We use this for making requests to the /summarize endpoint. It defines the expected structure of the request body and allows FastAPI to automatically validate incoming requests against this model. If a request does not conform to this model, FastAPI will return a 422 Unprocessable Entity error with details about what was wrong with the request.
     """
     Request model for the /summarize endpoint.
 
@@ -41,7 +46,7 @@ class SummarizeRequest(BaseModel):
     
     github_url: str = Field(..., description="Public Github repository URL") # github_url must be a string - Pydantic reads from the type hint above and knows to enforce from that.
 
-class SummarizeResponse(BaseModel):
+class SummarizeResponse(BaseModel): # We use this for receiving responses from the /summarize endpoint. It defines the expected structure of the response body and allows FastAPI to automatically generate API documentation that shows what the response will look like. It also provides type hints for the endpoint function, making it clear what kind of data is being returned.
     """
     Successful response returned by the /summarize endpoint.
 

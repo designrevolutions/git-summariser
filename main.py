@@ -919,7 +919,8 @@ Repository context:
     if not content:
         raise ValueError("Nebius returned an empty response.")
 
-    logger.info("Parsing Nebius response")
+    logger.info("Nebius response received: %d characters", len(content))
+
     return parse_llm_summary_response(content)
 
 

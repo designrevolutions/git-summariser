@@ -866,6 +866,7 @@ def create_nebius_client() -> OpenAI:
         base_url="https://api.tokenfactory.nebius.com/v1/",
         api_key=api_key,
         timeout=60.0,
+        max_retries=2,
     )
 
 

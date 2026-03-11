@@ -2,10 +2,11 @@
 """
 Main FastAPI application for the Nebius assignment project.
 
-This version of the service can now:
+This service performs end-to-end analysis of a public GitHub repository:
+
 1. Validate a public GitHub repository URL.
 2. Extract the repository owner and name.
-3. Check that the repository is accessible.
+3. Verify that the repository is accessible.
 4. Download the repository as a ZIP archive.
 5. Extract the repository into a temporary working directory.
 6. Traverse the repository while ignoring large dependency/build/cache folders.
@@ -15,11 +16,15 @@ This version of the service can now:
    - directory names
    - important project files
 8. Infer likely technologies from file extensions and marker files.
-9. Select important files to read.
-10. Build structured repository context ready to be sent to an LLM.
+9. Select a small set of high-signal files to read.
+10. Build structured repository context describing the project.
+11. Send the prepared context to a Nebius-hosted LLM.
+12. Parse the LLM response and return a structured repository summary.
 
-The next step will be to send the prepared context to an LLM and return a
-real summary, technology list, and structure description.
+The API returns:
+- a short natural-language summary of the project
+- the main detected technologies
+- a brief description of the repository structure
 
 Run:
     uvicorn main:app --reload
@@ -44,8 +49,10 @@ import requests  # Third-party HTTP client for downloading repository archives.
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-import logging # The app not working - need to add some logging to understand where it's failing. This is a common practice when developing APIs, as it helps you trace the flow of execution and identify any issues that arise.
+import logging # Used for logging important events and errors to help with debugging and monitoring the API when it is running.
 import time
+
+import textwrap # Used for cleaner multi-line string handling when building prompts for the LLM.
 
 load_dotenv() # Load environment variables from .env file, including the API key for the LLM.
 
@@ -227,12 +234,12 @@ class LlmRepositorySummary(BaseModel):
     parsing and validation logic later when we implement the LLM call and response parsing.
 
     Attributes:
-    summary:
-        Human-readable summary of what the project does.
-    technologies:
-        Main technologies, languages, and frameworks used in the project.
-    structure:
-        A brief overview of the project structure.
+        summary:
+            Human-readable summary of what the project does.
+        technologies:
+            Main technologies, languages, and frameworks used in the project.
+        structure:
+            A brief overview of the project structure.
     """
 
     summary: str
@@ -489,7 +496,6 @@ def download_and_extract_repository(
     # Create a temporary working directory so we do not clutter the project
     # folder with downloaded archives and extracted files.
     temporary_directory = Path(tempfile.mkdtemp(prefix="repo_summarizer_"))
-    print(f"Temporary directory created at: {temporary_directory}")
 
     try:
         zip_file_path = download_github_repository_as_zip(
@@ -881,24 +887,25 @@ def generate_repository_summary_with_nebius(
     logger.info("Creating Nebius client")
     client = create_nebius_client()
 
-    prompt = f"""
-Analyse the following GitHub repository context and return the result in exactly this format:
+    # I had to import textwrap at the top of the file to use textwrap.dedent here. This allows us to write a multi-line string for the prompt in a way that is nicely indented in the code, but without including that indentation in the actual string sent to the LLM. This makes the prompt more readable and maintainable in the code, while still ensuring that it is formatted correctly when sent to Nebius. The prompt itself is designed to clearly instruct the LLM on how to analyse the repository context and what format to return the results in, which should help improve the quality and consistency of the responses we get back from Nebius.
+    prompt = textwrap.dedent(f""" 
+                Analyse the following GitHub repository context and return the result in exactly this format:
 
-SUMMARY:
-<short human-readable explanation of what the project does>
+                SUMMARY:
+                <short human-readable explanation of what the project does>
 
-TECHNOLOGIES:
-<comma-separated list of the main technologies, languages, frameworks, or tools>
+                TECHNOLOGIES:
+                <comma-separated list of the main technologies, languages, frameworks, or tools>
 
-STRUCTURE:
-<brief description of how the repository is organised>
+                STRUCTURE:
+                <brief description of how the repository is organised>
 
-Do not include any extra headings, notes, or commentary.
+                Do not include any extra headings, notes, or commentary.
 
-Repository context:
+                Repository context:
 
-{repository_context}
-"""
+                {repository_context}
+            """)
 
     try:
         logger.info("Calling Nebius model: %s", AI_MODEL_NAME)
@@ -945,8 +952,6 @@ def root() -> dict[str, str]:
         }
     """
 
-    # Handy debug print to confirm requests are reaching the running server.
-    print("Root endpoint was called")
     return {"message": "Hello, Nebius assignment project! The API is running."}
 
 

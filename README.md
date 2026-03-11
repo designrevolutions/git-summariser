@@ -74,8 +74,12 @@ venv\Scripts\activate
 
 ## 3. Install dependencies
 
+Dependencies are listed in `requirements.txt`.
+
+Install them with:
+
 ```bash
-pip install fastapi uvicorn requests python-dotenv openai
+pip install -r requirements.txt
 ```
 
 ---
@@ -106,7 +110,7 @@ Add this to `.gitignore`:
 .env
 ```
 
-You can optionally provide a template file:
+You can optionally include a template file:
 
 ```
 .env.example
@@ -138,7 +142,7 @@ Uvicorn running on http://127.0.0.1:8000
 
 # API Documentation
 
-Once the server is running, open the interactive documentation:
+Once the server is running, open the interactive API documentation:
 
 ```
 http://127.0.0.1:8000/docs

@@ -50,7 +50,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 import logging # Used for logging important events and errors to help with debugging and monitoring the API when it is running.
-import time
 
 import textwrap # Used for cleaner multi-line string handling when building prompts for the LLM.
 
@@ -712,7 +711,7 @@ def build_repository_context(
     """
     Build a structured text context describing the repository.
 
-    This context is designed to be passed to an LLM in the next step.
+    This context is designed to be passed to the LLM for summarisation.
 
     Args:
         repository_path:

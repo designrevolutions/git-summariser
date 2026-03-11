@@ -28,6 +28,11 @@ Then open:
     http://127.0.0.1:8000/docs
 """
 
+import re
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
 from pathlib import Path  # Object-oriented, cross-platform file path handling.
 import os  # Used for recursive directory traversal with os.walk().
 import shutil  # Used to remove temporary directories after processing.
@@ -38,6 +43,20 @@ import zipfile  # Used to extract downloaded ZIP archives.
 import requests  # Third-party HTTP client for downloading repository archives.
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+import logging # The app not working - need to add some logging to understand where it's failing. This is a common practice when developing APIs, as it helps you trace the flow of execution and identify any issues that arise.
+import time
+
+load_dotenv() # Load environment variables from .env file, including the API key for the LLM.
+
+# ######++++++ Logging code
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+# ######++++++ End of logging code
 
 
 IGNORED_DIRECTORIES = {
@@ -163,6 +182,8 @@ MAX_CHARACTERS_PER_FILE = 4000
 MAX_TOTAL_CONTEXT_CHARACTERS = 20000
 # Hard limit for the total repository context we build for the LLM.
 
+AI_MODEL_NAME = "deepseek-ai/DeepSeek-R1-0528"
+
 
 class SummarizeRequest(BaseModel):
     """
@@ -192,6 +213,26 @@ class SummarizeResponse(BaseModel):
             Main technologies, languages, and frameworks used in the project.
         structure:
             A brief overview of the project structure.
+    """
+
+    summary: str
+    technologies: list[str]
+    structure: str
+
+
+class LlmRepositorySummary(BaseModel):
+    """
+    Structured repository summary parsed from the LLM response.
+    Same as SummarizeResponse for now, but defined separately to allow for different
+    parsing and validation logic later when we implement the LLM call and response parsing.
+
+    Attributes:
+    summary:
+        Human-readable summary of what the project does.
+    technologies:
+        Main technologies, languages, and frameworks used in the project.
+    structure:
+        A brief overview of the project structure.
     """
 
     summary: str
@@ -657,6 +698,7 @@ def read_repository_text_file(
     return content[:max_characters]
 
 
+# The next two functions are where we build the context for the LLM and create a client to call the LLM. They are separate from the repository analysis logic to keep things modular and clear.
 def build_repository_context(
     repository_path: Path,
     analysis: dict,
@@ -723,9 +765,167 @@ def build_repository_context(
     return "\n".join(context_parts)
 
 
+def parse_llm_summary_response(response_text: str) -> LlmRepositorySummary:
+    """
+    Parse the LLM response written in a labelled plain-text format.
+
+    Expected format:
+
+    SUMMARY:
+    ...
+
+    TECHNOLOGIES:
+    Python, FastAPI, Requests
+
+    STRUCTURE:
+    ...
+
+    Args:
+        response_text:
+            Raw text returned by the LLM.
+
+    Returns:
+        Parsed structured repository summary.
+
+    Raises:
+        ValueError:
+            If the response does not contain the expected sections.
+    """
+
+    # Use regular expressions to extract the sections of the response based on the labels.
+    summary_match = re.search(
+        r"SUMMARY:\s*(.*?)\s*TECHNOLOGIES:",
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    technologies_match = re.search(
+        r"TECHNOLOGIES:\s*(.*?)\s*STRUCTURE:",
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    structure_match = re.search(
+        r"STRUCTURE:\s*(.*)",
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    if not summary_match or not technologies_match or not structure_match:
+        raise ValueError(
+            "Nebius response did not match the expected labelled format."
+        )
+
+    summary = summary_match.group(1).strip() # Remove leading/trailing whitespace for cleaner output. group(1) gets the content of the first (and only) capturing group in the regex, which is the text between the labels.
+    technologies_text = technologies_match.group(1).strip()
+    structure = structure_match.group(1).strip()
+
+    # Using list comprehension to split the technologies by comma, strip whitespace, and filter out any empty items. This allows for a flexible number of technologies in the response.
+    # I don't like this version of the code as much because it's a bit dense, but it is more robust to different formatting of the technologies list in the LLM response. For example, it can handle extra spaces or missing commas more gracefully than a simple split(",") would.
+    # technologies = [
+    #     item.strip()
+    #     for item in technologies_text.split(",")
+    #     if item.strip()
+    # ]
+
+
+    # This version is more verbose but clearer to read and understand. It achieves the same result as the list comprehension above, but with more explicit steps. It also allows for easier debugging if needed, since you can inspect the intermediate variables.
+    technologies = []
+
+    for item in technologies_text.split(","):
+        
+        cleaned = item.strip()
+
+        if cleaned:
+            technologies.append(cleaned)
+      
+
+    return LlmRepositorySummary(
+        summary=summary,
+        technologies=technologies,
+        structure=structure,
+    )
+
+
+def create_nebius_client() -> OpenAI:
+    """
+    Create an OpenAI-compatible client for Nebius Token Factory.
+
+    Returns:
+        Configured OpenAI client.
+
+    Raises:
+        ValueError:
+            If the NEBIUS_API_KEY environment variable is missing.
+    """
+
+    api_key = os.environ.get("NEBIUS_API_KEY")
+
+    if not api_key:
+        raise ValueError("NEBIUS_API_KEY environment variable is not set.")
+
+    return OpenAI(
+        base_url="https://api.tokenfactory.nebius.com/v1/",
+        api_key=api_key,
+        timeout=60.0,
+    )
+
+
+# I've now added logging statements to the generate_repository_summary_with_nebius function to help trace the flow of execution and identify where it might be failing. This is a common practice when developing APIs, as it allows you to see how far the code is getting before an error occurs, and what the internal state is at various points in the process. The logging statements will print messages to the console with timestamps and log levels, which can be very helpful for debugging and monitoring the API's behavior when it is running.
+def generate_repository_summary_with_nebius(
+    repository_context: str,
+) -> LlmRepositorySummary:
+    """
+    Send repository context to Nebius and return a structured repository summary.
+    """
+
+    logger.info("Creating Nebius client")
+    client = create_nebius_client()
+
+    prompt = f"""
+Analyse the following GitHub repository context and return the result in exactly this format:
+
+SUMMARY:
+<short human-readable explanation of what the project does>
+
+TECHNOLOGIES:
+<comma-separated list of the main technologies, languages, frameworks, or tools>
+
+STRUCTURE:
+<brief description of how the repository is organised>
+
+Do not include any extra headings, notes, or commentary.
+
+Repository context:
+
+{repository_context}
+"""
+
+    try:
+        logger.info("Calling Nebius model: %s", AI_MODEL_NAME)
+        response = client.chat.completions.create(
+            model=AI_MODEL_NAME,
+            temperature=0.2,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+        )
+        logger.info("Nebius response received")
+    except Exception as error:
+        logger.exception("Nebius API request failed")
+        raise ValueError(f"Nebius API request failed: {error}") from error
+
+    content = response.choices[0].message.content
+
+    if not content:
+        raise ValueError("Nebius returned an empty response.")
+
+    logger.info("Parsing Nebius response")
+    return parse_llm_summary_response(content)
+
+
 ####################################################################################
 # All the action happens below - we've declared functions and classes, and now we
 # wire everything together.
+# Below are what is called the route fns. These are the functions that get called when an HTTP request hits a certain endpoint.
 ####################################################################################
 
 
@@ -748,57 +948,52 @@ def root() -> dict[str, str]:
     return {"message": "Hello, Nebius assignment project! The API is running."}
 
 
+# I added some logging to the summarize_repository function to help trace the flow of execution and identify where it might be failing. This is a common practice when developing APIs, as it allows you to see how far the code is getting before an error occurs, and what the internal state is at various points in the process.
 @app.post("/summarize", response_model=SummarizeResponse)
 def summarize_repository(request: SummarizeRequest) -> SummarizeResponse:
     """
-    Validate the GitHub URL, download the repository, analyse it, and build
-    LLM-ready context.
-
-    This endpoint currently:
-    - validates the GitHub URL
-    - extracts the repository owner and name
-    - downloads the repository ZIP archive
-    - extracts the repository locally
-    - analyses the repository structure
-    - builds context ready for LLM summarisation
-
-    It does not yet:
-    - call an LLM
-    - return the final generated summary from the model
+    Validate the GitHub URL, download the repository, analyse it, build
+    repository context, send that context to Nebius, and return the result.
     """
 
+    temporary_directory: Path | None = None
+
     try:
+        logger.info("Step 1: Parsing GitHub URL")
         owner, repository_name = parse_github_repository_url(request.github_url)
 
+        logger.info("Step 2: Downloading and extracting repository %s/%s", owner, repository_name)
         temporary_directory, extracted_repository_path = download_and_extract_repository(
             owner=owner,
             repository_name=repository_name,
         )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
 
-    try:
+        logger.info("Step 3: Analysing repository structure")
         analysis = analyse_repository_structure(extracted_repository_path)
+
+        logger.info("Step 4: Building repository context")
         repository_context = build_repository_context(
             repository_path=extracted_repository_path,
             analysis=analysis,
         )
-    finally:
-        # Remove the temporary directory, including the downloaded ZIP and the
-        # extracted repository, whether processing succeeds or fails.
-        shutil.rmtree(temporary_directory, ignore_errors=True)
 
-    return SummarizeResponse(
-        summary=(
-            f"Repository '{owner}/{repository_name}' was downloaded, extracted, "
-            "analysed, and prepared for LLM summarisation."
-        ),
-        technologies=analysis["technologies"] or ["Unknown"],
-        structure=(
-            f"Total files analysed: {analysis['file_count']}. "
-            f"Important files read: "
-            f"{', '.join(choose_candidate_files_to_read(analysis['candidate_files_to_read'])) or 'None'}. "
-            f"Context length prepared for LLM: {len(repository_context)} characters. "
-            f"Analysis mode: {analysis['analysis_mode']}."
-        ),
-    )
+        logger.info("Step 5: Sending context to Nebius")
+        llm_result = generate_repository_summary_with_nebius(
+            repository_context=repository_context,
+        )
+
+        logger.info("Step 6: Returning response")
+        return SummarizeResponse(
+            summary=llm_result.summary,
+            technologies=llm_result.technologies or analysis["technologies"] or ["Unknown"],
+            structure=llm_result.structure,
+        )
+
+    except ValueError as error:
+        logger.exception("Summarisation failed")
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    finally:
+        if temporary_directory is not None:
+            logger.info("Cleaning up temporary directory: %s", temporary_directory)
+            shutil.rmtree(temporary_directory, ignore_errors=True)

@@ -34,6 +34,18 @@ The service performs the following steps:
 
 ---
 
+# Project Structure
+
+```
+.
+├── main.py
+├── requirements.txt
+├── README.md
+├── .env.example
+```
+
+---
+
 # Requirements
 
 - Python **3.10+**
@@ -74,9 +86,9 @@ venv\Scripts\activate
 
 ## 3. Install dependencies
 
-Dependencies are listed in `requirements.txt`.
+Dependencies are defined in **requirements.txt**.
 
-Install them with:
+Install them using:
 
 ```bash
 pip install -r requirements.txt
@@ -86,7 +98,7 @@ pip install -r requirements.txt
 
 # Environment Configuration
 
-The LLM API key must be provided using the environment variable:
+The LLM API key must be provided via the environment variable:
 
 ```
 NEBIUS_API_KEY
@@ -98,7 +110,7 @@ Create a `.env` file in the project root:
 NEBIUS_API_KEY=your_api_key_here
 ```
 
-The application loads this automatically using `python-dotenv`.
+The application loads this automatically using **python-dotenv**.
 
 ⚠️ **Important**
 
@@ -110,11 +122,9 @@ Add this to `.gitignore`:
 .env
 ```
 
-You can optionally include a template file:
+You can optionally include a template file for others:
 
-```
-.env.example
-```
+`.env.example`
 
 Example:
 
@@ -132,23 +142,25 @@ Start the FastAPI server using **uvicorn**.
 uvicorn main:app --reload
 ```
 
-You should see output similar to:
+The API will start on:
 
 ```
-Uvicorn running on http://127.0.0.1:8000
+http://127.0.0.1:8000
 ```
 
 ---
 
 # API Documentation
 
-Once the server is running, open the interactive API documentation:
+FastAPI automatically generates interactive documentation.
+
+Open:
 
 ```
 http://127.0.0.1:8000/docs
 ```
 
-This provides a Swagger UI interface for testing the API.
+This allows you to test the API directly in your browser.
 
 ---
 
@@ -221,7 +233,7 @@ coverage
 .git
 ```
 
-The service prioritises high-signal files such as:
+The system prioritises high-signal files such as:
 
 ```
 README.md
@@ -233,38 +245,53 @@ go.mod
 Dockerfile
 ```
 
-These files typically provide the most useful context about the repository.
+These files typically provide useful context about a repository.
 
 ---
 
 # LLM Integration
 
-The project uses the Nebius Token Factory API with an OpenAI-compatible client.
+The project uses the **Nebius Token Factory API** with an OpenAI-compatible client.
 
-Model used:
+Default model:
 
 ```
 deepseek-ai/DeepSeek-R1-0528
 ```
 
-The LLM receives structured repository context and returns:
+---
 
-- SUMMARY
-- TECHNOLOGIES
-- STRUCTURE
+# Model Availability
 
-The API parses this response and returns the structured result.
+The API relies on models available through the Nebius Token Factory API.
+
+The current default model is:
+
+```
+deepseek-ai/DeepSeek-R1-0528
+```
+
+Model availability on the platform may occasionally change.  
+If a model becomes unavailable, the code has been designed so the model can easily be changed by modifying a single constant:
+
+```python
+AI_MODEL_NAME = "deepseek-ai/DeepSeek-R1-0528"
+```
+
+Other compatible models available through Nebius should work without requiring structural changes to the application.
+
+This design keeps the system flexible and avoids tight coupling to a specific model version.
 
 ---
 
 # Logging
 
-The application uses Python's `logging` module to report major execution steps such as:
+The application uses Python's **logging module** to track execution steps including:
 
 - URL validation
 - repository download
 - repository analysis
-- LLM request
+- LLM requests
 - response parsing
 
 Logs include timestamps and severity levels to help debugging.

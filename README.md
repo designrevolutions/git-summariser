@@ -2,13 +2,7 @@
 
 This project implements a FastAPI service that analyses a public GitHub repository and generates a structured summary using a Nebius-hosted large language model (LLM).
 
-The service performs repository analysis locally, builds structured context describing the project, and then sends that context to the LLM to generate a concise summary of the repository.
-
-The API returns:
-
-- a short human-readable project summary
-- the main detected technologies
-- a brief description of the repository structure
+The system is designed to perform lightweight static repository analysis locally and delegate higher-level reasoning to an LLM, keeping the architecture simple, efficient, and easily extensible.
 
 ---
 
@@ -55,42 +49,38 @@ The service performs the following steps:
 
 # Installation
 
-## 1. Clone the repository
+## 1 Clone the repository
 
-```bash
+```
 git clone <repository-url>
 cd <repository-folder>
 ```
 
 ---
 
-## 2. Create a virtual environment
-
-It is recommended to use a virtual environment to isolate dependencies.
+## 2 Create a virtual environment
 
 ### Linux / macOS
 
-```bash
+```
 python -m venv venv
 source venv/bin/activate
 ```
 
 ### Windows
 
-```powershell
+```
 python -m venv venv
 venv\Scripts\activate
 ```
 
 ---
 
-## 3. Install dependencies
+## 3 Install dependencies
 
 Dependencies are defined in **requirements.txt**.
 
-Install them using:
-
-```bash
+```
 pip install -r requirements.txt
 ```
 
@@ -98,7 +88,7 @@ pip install -r requirements.txt
 
 # Environment Configuration
 
-The LLM API key must be provided via the environment variable:
+The API key must be provided through an environment variable.
 
 ```
 NEBIUS_API_KEY
@@ -112,21 +102,17 @@ NEBIUS_API_KEY=your_api_key_here
 
 The application loads this automatically using **python-dotenv**.
 
-⚠️ **Important**
+⚠️ Do **not commit** your `.env` file.
 
-Do **not** commit your `.env` file to version control.
-
-Add this to `.gitignore`:
+Add to `.gitignore`:
 
 ```
 .env
 ```
 
-You can optionally include a template file for others:
+Provide an example file:
 
 `.env.example`
-
-Example:
 
 ```
 NEBIUS_API_KEY=your_api_key_here
@@ -136,13 +122,13 @@ NEBIUS_API_KEY=your_api_key_here
 
 # Running the API
 
-Start the FastAPI server using **uvicorn**.
+Start the FastAPI server:
 
-```bash
+```
 uvicorn main:app --reload
 ```
 
-The API will start on:
+The API runs on:
 
 ```
 http://127.0.0.1:8000
@@ -152,7 +138,7 @@ http://127.0.0.1:8000
 
 # API Documentation
 
-FastAPI automatically generates interactive documentation.
+FastAPI automatically provides interactive documentation.
 
 Open:
 
@@ -160,34 +146,28 @@ Open:
 http://127.0.0.1:8000/docs
 ```
 
-This allows you to test the API directly in your browser.
-
 ---
 
 # Testing the API
 
-## Using curl (Linux / macOS)
+## Linux / macOS
 
-```bash
+```
 curl -X POST "http://127.0.0.1:8000/summarize" \
-     -H "Content-Type: application/json" \
-     -d '{"github_url": "https://github.com/psf/requests"}'
+-H "Content-Type: application/json" \
+-d '{"github_url": "https://github.com/psf/requests"}'
 ```
 
 ---
 
-## Using PowerShell (Windows)
+## Windows PowerShell
 
-PowerShell's `curl` command is an alias for `Invoke-WebRequest`, so the syntax differs.
-
-Use:
-
-```powershell
+```
 Invoke-RestMethod `
-  -Method POST `
-  -Uri "http://127.0.0.1:8000/summarize" `
-  -ContentType "application/json" `
-  -Body '{"github_url": "https://github.com/psf/requests"}'
+-Method POST `
+-Uri "http://127.0.0.1:8000/summarize" `
+-ContentType "application/json" `
+-Body '{"github_url": "https://github.com/psf/requests"}'
 ```
 
 ---
@@ -198,7 +178,7 @@ Invoke-RestMethod `
 POST /summarize
 ```
 
-```json
+```
 {
   "github_url": "https://github.com/psf/requests"
 }
@@ -208,7 +188,7 @@ POST /summarize
 
 # Example Response
 
-```json
+```
 {
   "summary": "The Requests library is a Python HTTP client designed to simplify sending HTTP requests.",
   "technologies": ["Python"],
@@ -218,9 +198,9 @@ POST /summarize
 
 ---
 
-# Notes on Repository Analysis
+# Repository Analysis Notes
 
-To keep analysis efficient and focused, the service ignores large dependency or build directories such as:
+To keep analysis efficient the following directories are ignored:
 
 ```
 node_modules
@@ -233,7 +213,7 @@ coverage
 .git
 ```
 
-The system prioritises high-signal files such as:
+High-signal files used for analysis include:
 
 ```
 README.md
@@ -244,8 +224,6 @@ Cargo.toml
 go.mod
 Dockerfile
 ```
-
-These files typically provide useful context about a repository.
 
 ---
 
@@ -263,57 +241,45 @@ deepseek-ai/DeepSeek-R1-0528
 
 # Model Availability
 
-The API relies on models available through the Nebius Token Factory API.
+Models available through Nebius may change over time.
 
-The current default model is:
+The model used by the system is defined in a single constant:
 
 ```
-deepseek-ai/DeepSeek-R1-0528
-```
-
-Model availability on the platform may occasionally change.  
-If a model becomes unavailable, the code has been designed so the model can easily be changed by modifying a single constant:
-
-```python
 AI_MODEL_NAME = "deepseek-ai/DeepSeek-R1-0528"
 ```
 
-Other compatible models available through Nebius should work without requiring structural changes to the application.
-
-This design keeps the system flexible and avoids tight coupling to a specific model version.
+If a model becomes unavailable, it can be replaced easily without changing the rest of the code.
 
 ---
 
 # Logging
 
-The application uses Python's **logging module** to track execution steps including:
+The application uses Python's **logging module** to record:
 
-- URL validation
 - repository download
 - repository analysis
 - LLM requests
-- response parsing
-
-Logs include timestamps and severity levels to help debugging.
+- responses and errors
 
 ---
 
 # Error Handling
 
-The API returns HTTP 400 responses when errors occur, such as:
+The API returns HTTP 400 responses for issues such as:
 
 - invalid GitHub URLs
 - inaccessible repositories
 - download failures
-- LLM request failures
+- LLM request errors
 
 ---
 
 # Temporary File Handling
 
-Repositories are downloaded and extracted into a temporary working directory created with `tempfile`.
+Repositories are downloaded and extracted into temporary directories using `tempfile`.
 
-This directory is automatically removed after each request.
+These directories are automatically removed after processing.
 
 ---
 
@@ -321,8 +287,8 @@ This directory is automatically removed after each request.
 
 This project demonstrates:
 
-- API development with **FastAPI**
-- repository analysis using **Python filesystem tools**
-- structured prompt building for **LLM summarisation**
-- integration with the **Nebius Token Factory API**
-- robust error handling and logging
+- FastAPI service development
+- repository analysis with Python
+- structured LLM prompting
+- integration with Nebius Token Factory
+- robust logging and error handling

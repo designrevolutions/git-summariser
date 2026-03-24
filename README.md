@@ -1,4 +1,4 @@
-# GitHub Repository Summarizer API
+# AI GitHub Repository Summarizer API
 
 This project implements a FastAPI service that analyses a public GitHub repository and generates a structured summary using a Nebius-hosted large language model (LLM).
 
